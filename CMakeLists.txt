@@ -51,6 +51,10 @@ option(ODIN_COVERAGE "Enable building odin with coverage flags" OFF)
 option(ODIN_TIDY "Enable building odin with clang tidy" OFF)
 option(ODIN_SANITIZE "Enable building odin with sanitize flags" OFF)
 
+# Allow the user to enable building Yosys
+option(WITH_YOSYS "Enable building Yosys" OFF)
+option(ODIN_USE_YOSYS "Enable building Yosys" OFF)
+
 set(VTR_VERSION_MAJOR 8)
 set(VTR_VERSION_MINOR 1)
 set(VTR_VERSION_PATCH 0)
@@ -378,7 +382,10 @@ if(${WITH_ABC})
     add_subdirectory(ace2)
 endif()
 add_subdirectory(utils)
-if(${WITH_ODIN})
+# define cmake params to compile Yosys
+if(${WITH_YOSYS})
+    add_definitions("-D_YOSYS_")
+elseif(${WITH_ODIN})
     add_subdirectory(ODIN_II)
     # blifexplorer depends on odin
     if(${WITH_BLIFEXPLORER})

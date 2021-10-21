@@ -19,7 +19,7 @@ import vtr
 
 BASIC_VERBOSITY = 1
 
-VTR_STAGES = ["odin", "abc", "ace", "vpr"]
+VTR_STAGES = ["odin", "yosys", "abc", "ace", "vpr"]
 
 # pylint: disable=too-few-public-methods
 class VtrStageArgparseAction(argparse.Action):
@@ -30,6 +30,8 @@ class VtrStageArgparseAction(argparse.Action):
     def __call__(self, parser, namespace, value, option_string=None):
         if value == "odin":
             setattr(namespace, self.dest, vtr.VtrStage.ODIN)
+        elif value == "yosys":
+            setattr(namespace, self.dest, vtr.VtrStage.YOSYS)
         elif value == "abc":
             setattr(namespace, self.dest, vtr.VtrStage.ABC)
         elif value == "vpr":
@@ -184,7 +186,7 @@ def vtr_command_argparser(prog=None):
 
     house_keeping.add_argument(
         "-track_memory_usage",
-        default=False,
+        default=True,
         action="store_true",
         dest="track_memory_usage",
         help="Track the memory usage for each stage."
@@ -323,11 +325,44 @@ def vtr_command_argparser(prog=None):
         help="Supplies Odin with a custom config file for optimizations.",
     )
     odin.add_argument(
+        "-elaborator",
+        nargs=None,
+        default="odin",
+        dest="elaborator",
+        help="Specify the elaborator of the synthesis flow for Odin-II",
+    )
+    odin.add_argument(
         "-include",
         nargs="*",
         default=None,
         dest="include_list_file",
         help="List of include files to a benchmark circuit(pass to Odin as a benchmark design set)",
+    )
+    odin.add_argument(
+        "-coarsen",
+        default=False,
+        action="store_true",
+        dest="coarsen",
+        help="Notify Odin if the input BLIF is coarse-grain",
+    )
+    odin.add_argument(
+        "-fflegalize",
+        default=False,
+        action="store_true",
+        dest="fflegalize",
+        help="Make flip-flops rising edge for coarse-grain input BLIFs in the techmap"
+        + "(Odin-II synthesis flow generates rising edge FFs by default)",
+    )
+    #
+    # YOSYS arguments
+    #
+    yosys = parser.add_argument_group("Yosys", description="Arguments to be passed to Yosys")
+    yosys.add_argument(
+        "-yosys_script",
+        default=None,
+        dest="yosys_script",
+        help="Supplies Yosys with a .ys script file (similar to Tcl script)"
+        + ", including synthesis steps.",
     )
     #
     # VPR arguments
@@ -389,6 +424,26 @@ def vtr_command_argparser(prog=None):
     return parser
 
 
+def format_human_readable_memory(num_kbytes):
+    """format the number of bytes given as a human readable value"""
+    if num_kbytes < 1024:
+        value = "%.2f KiB" % (num_kbytes)
+    elif num_kbytes < (1024 ** 2):
+        value = "%.2f MiB" % (num_kbytes / (1024 ** 1))
+    else:
+        value = "%.2f GiB" % (num_kbytes / (1024 ** 2))
+    return value
+
+
+def get_memory_usage(logfile):
+    """Extrats the memory usage from the *.out log files"""
+    with open(logfile, "r") as fpmem:
+        for line in fpmem.readlines():
+            if "Maximum resident set size" in line:
+                return format_human_readable_memory(int(line.split()[-1]))
+    return "--"
+
+
 # pylint: enable=too-many-statements
 
 
@@ -406,7 +461,7 @@ def vtr_command_main(arg_list, prog=None):
         temp_dir = Path(args.temp_dir)
     # Specify how command should be run
     command_runner = vtr.CommandRunner(
-        track_memory=True,
+        track_memory=args.track_memory_usage,
         max_memory_mb=args.limit_memory_usage,
         timeout_sec=args.timeout,
         verbose=args.verbose,
@@ -441,11 +496,13 @@ def vtr_command_main(arg_list, prog=None):
             vpr_args=vpr_args,
             abc_args=process_abc_args(args),
             odin_args=process_odin_args(args),
+            yosys_args=process_yosys_args(),
             keep_intermediate_files=args.keep_intermediate_files,
             keep_result_files=args.keep_result_files,
             min_hard_mult_size=args.min_hard_mult_size,
             min_hard_adder_size=args.min_hard_adder_size,
             odin_config=args.odin_config,
+            yosys_script=args.yosys_script,
             check_equivalent=args.check_equivalent,
             check_incremental_sta_consistency=args.check_incremental_sta_consistency,
             use_old_abc_script=args.use_old_abc_script,
@@ -466,9 +523,12 @@ def vtr_command_main(arg_list, prog=None):
 
     finally:
         seconds = datetime.now() - start
+
         print(
-            "{status} (took {time})".format(
-                status=error_status, time=vtr.format_elapsed_time(seconds)
+            "{status} (took {time}, vpr run consumed {max_mem} memory)".format(
+                status=error_status,
+                time=vtr.format_elapsed_time(seconds),
+                max_mem=get_memory_usage(temp_dir / "vpr.out"),
             )
         )
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -567,6 +627,7 @@ def process_odin_args(args):
     """
     odin_args = OrderedDict()
     odin_args["adder_type"] = args.adder_type
+    odin_args["elaborator"] = args.elaborator
 
     if args.adder_cin_global:
         odin_args["adder_cin_global"] = True
@@ -577,7 +638,22 @@ def process_odin_args(args):
     if args.use_odin_simulation:
         odin_args["use_odin_simulation"] = True
 
+    if args.coarsen:
+        odin_args["coarsen"] = True
+
+    if args.fflegalize:
+        odin_args["fflegalize"] = True
+
     return odin_args
+
+
+def process_yosys_args():
+    """
+    Finds arguments needed in the YOSYS stage of the flow
+    """
+    yosys_args = OrderedDict()
+
+    return yosys_args
 
 
 def process_vpr_args(args, prog, temp_dir, vpr_args):
